@@ -11,7 +11,7 @@ node_modules
 dist
 dist-ssr
 *.local
-appId.js
+.env
 
 # Editor directories and files
 .vscode/*
@@ -23,3 +23,6 @@ appId.js
 *.njsproj
 *.sln
 *.sw?
+
+# Misc
+smart_commit.ps1
