@@ -1,11 +1,13 @@
 import "./style.css";
 import AgoraRTC from "agora-rtc-sdk-ng";
-import appid from "./appId.js";
+import AgoraRTM from "agora-rtm-sdk";
+
+const appid = import.meta.env.VITE_AGORA_APP_ID;
 
 const token = null;
 
-const rtcUid = Math.floor(Math.random() * 2032);
-const rtmUid = String(Math.floor(Math.random() * 2032));
+const rtcUid = Math.floor(Math.random() * 2147483647);
+const rtmUid = String(Math.floor(Math.random() * 2147483647));
 
 const getRoomId = () => {
   const queryString = window.location.search;
@@ -78,8 +80,6 @@ let initVolumeIndicator = async () => {
   //2
   rtcClient.on("volume-indicator", (volumes) => {
     volumes.forEach((volume) => {
-      console.log(`UID ${volume.uid} Level ${volume.level}`);
-
       //3
       try {
         let item = document.getElementsByClassName(`avatar-${volume.uid}`)[0];
