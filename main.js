@@ -3,19 +3,14 @@ import AgoraRTC from "agora-rtc-sdk-ng";
 import AgoraRTM from "agora-rtm-sdk";
 
 const appid = import.meta.env.VITE_AGORA_APP_ID;
-
 const token = null;
 
 const rtcUid = Math.floor(Math.random() * 2147483647);
 const rtmUid = String(Math.floor(Math.random() * 2147483647));
 
 const getRoomId = () => {
-  const queryString = window.location.search;
-  const urlParams = new URLSearchParams(queryString);
-
-  if (urlParams.get("room")) {
-    return urlParams.get("room").toLowerCase();
-  }
+  const urlParams = new URLSearchParams(window.location.search);
+  return urlParams.get("room") ? urlParams.get("room").toLowerCase() : null;
 };
 
 let roomId = getRoomId() || null;
@@ -27,12 +22,49 @@ let audioTracks = {
 };
 
 let micMuted = true;
+let rtcClient, rtmClient, channel, avatar;
 
-let rtcClient;
-let rtmClient;
-let channel;
+const escapeHtml = (str) => {
+  const div = document.createElement("div");
+  div.textContent = str || "";
+  return div.innerHTML;
+};
 
-let avatar;
+const buildMemberCard = (memberId, { name, userRtcUid, userAvatar, isHost, micMuted: isMuted }) => {
+  const isHostUser = isHost === "true";
+  const micSrc = isMuted === "false" ? "icons/mic.svg" : "icons/mic-off.svg";
+
+  return `
+  <div class="speaker user-rtc-${userRtcUid}" id="${memberId}">
+    <img class="user-avatar avatar-${userRtcUid}" src="${userAvatar}" />
+    <p class="user-name">${escapeHtml(name)}</p>
+    <span class="user-role ${isHostUser ? "host-badge" : "participant-badge"}">
+      ${isHostUser ? "Host" : "Participant"}
+    </span>
+    <div class="mic-indicator mic-status-${userRtcUid}">
+      <img class="user-mic-icon" src="${micSrc}" />
+    </div>
+  </div>`;
+};
+
+const updateMicDisplay = (userRtcUid, muted) => {
+  const indicatorEl = document.querySelector(`.mic-status-${userRtcUid}`);
+  if (!indicatorEl) return;
+  const micEl = indicatorEl.querySelector(".user-mic-icon");
+  if (micEl) micEl.src = muted ? "icons/mic-off.svg" : "icons/mic.svg";
+  if (muted) indicatorEl.classList.remove("speaking");
+};
+
+const handleChannelMessage = (message) => {
+  try {
+    const data = JSON.parse(message.text);
+    if (data.type === "mic-toggle") {
+      updateMicDisplay(data.rtcUid, data.muted);
+    }
+  } catch (e) {
+    console.error(e);
+  }
+};
 
 const initRtm = async (name) => {
   rtmClient = AgoraRTM.createInstance(appid);
@@ -41,24 +73,28 @@ const initRtm = async (name) => {
   channel = rtmClient.createChannel(roomId);
   await channel.join();
 
+  // First member to join is the host
+  const existingMembers = await channel.getMembers();
+  const isHost = existingMembers.length === 1;
+
   await rtmClient.addOrUpdateLocalUserAttributes({
     name: name,
     userRtcUid: rtcUid.toString(),
     userAvatar: avatar,
+    isHost: isHost ? "true" : "false",
+    micMuted: "true",
   });
 
   getChannelMembers();
 
   window.addEventListener("beforeunload", leaveRtmChannel);
-
   channel.on("MemberJoined", handleMemberJoined);
   channel.on("MemberLeft", handleMemberLeft);
+  channel.on("ChannelMessage", handleChannelMessage);
 };
 
 const initRtc = async () => {
   rtcClient = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
-
-  //rtcClient.on('user-joined', handleUserJoined)
   rtcClient.on("user-published", handleUserPublished);
   rtcClient.on("user-left", handleUserLeft);
 
@@ -67,27 +103,26 @@ const initRtc = async () => {
   audioTracks.localAudioTrack.setMuted(micMuted);
   await rtcClient.publish(audioTracks.localAudioTrack);
 
-  //document.getElementById('members').insertAdjacentHTML('beforeend', `<div class="speaker user-rtc-${rtcUid}" id="${rtcUid}"><p>${rtcUid}</p></div>`)
-
   initVolumeIndicator();
 };
 
-let initVolumeIndicator = async () => {
-  //1
+const initVolumeIndicator = async () => {
   AgoraRTC.setParameter("AUDIO_VOLUME_INDICATION_INTERVAL", 200);
   rtcClient.enableAudioVolumeIndicator();
 
-  //2
   rtcClient.on("volume-indicator", (volumes) => {
     volumes.forEach((volume) => {
-      //3
       try {
-        let item = document.getElementsByClassName(`avatar-${volume.uid}`)[0];
+        const avatarEl = document.querySelector(`.avatar-${volume.uid}`);
+        const micIndicatorEl = document.querySelector(`.mic-status-${volume.uid}`);
+        const isSpeaking = volume.level >= 50;
 
-        if (volume.level >= 50) {
-          item.style.borderColor = "#00ff00";
-        } else {
-          item.style.borderColor = "#fff";
+        if (avatarEl) {
+          avatarEl.style.borderColor = isSpeaking ? "#00ff00" : "#fff";
+          avatarEl.classList.toggle("speaking", isSpeaking);
+        }
+        if (micIndicatorEl) {
+          micIndicatorEl.classList.toggle("speaking", isSpeaking);
         }
       } catch (error) {
         console.error(error);
@@ -96,83 +131,57 @@ let initVolumeIndicator = async () => {
   });
 };
 
-// let handleUserJoined = async (user) => {
-//   document.getElementById('members').insertAdjacentHTML('beforeend', `<div class="speaker user-rtc-${user.uid}" id="${user.uid}"><p>${user.uid}</p></div>`)
-// }
-
-let handleUserPublished = async (user, mediaType) => {
+const handleUserPublished = async (user, mediaType) => {
   await rtcClient.subscribe(user, mediaType);
-
-  if (mediaType == "audio") {
+  if (mediaType === "audio") {
     audioTracks.remoteAudioTracks[user.uid] = [user.audioTrack];
     user.audioTrack.play();
   }
 };
 
-let handleUserLeft = async (user) => {
+const handleUserLeft = async (user) => {
   delete audioTracks.remoteAudioTracks[user.uid];
-  //document.getElementById(user.uid).remove()
 };
 
-let handleMemberJoined = async (MemberId) => {
-  let { name, userRtcUid, userAvatar } =
-    await rtmClient.getUserAttributesByKeys(MemberId, [
-      "name",
-      "userRtcUid",
-      "userAvatar",
+const handleMemberJoined = async (MemberId) => {
+  const attrs = await rtmClient.getUserAttributesByKeys(MemberId, [
+    "name", "userRtcUid", "userAvatar", "isHost", "micMuted",
+  ]);
+  document.getElementById("members").insertAdjacentHTML("beforeend", buildMemberCard(MemberId, attrs));
+};
+
+const handleMemberLeft = async (MemberId) => {
+  document.getElementById(MemberId)?.remove();
+};
+
+const getChannelMembers = async () => {
+  const members = await channel.getMembers();
+  for (let i = 0; i < members.length; i++) {
+    const attrs = await rtmClient.getUserAttributesByKeys(members[i], [
+      "name", "userRtcUid", "userAvatar", "isHost", "micMuted",
     ]);
-
-  let newMember = `
-  <div class="speaker user-rtc-${userRtcUid}" id="${MemberId}">
-    <img class="user-avatar avatar-${userRtcUid}" src="${userAvatar}"/>
-      <p>${name}</p>
-  </div>`;
-
-  document.getElementById("members").insertAdjacentHTML("beforeend", newMember);
-};
-
-let handleMemberLeft = async (MemberId) => {
-  document.getElementById(MemberId).remove();
-};
-
-let getChannelMembers = async () => {
-  let members = await channel.getMembers();
-
-  for (let i = 0; members.length > i; i++) {
-    let { name, userRtcUid, userAvatar } =
-      await rtmClient.getUserAttributesByKeys(members[i], [
-        "name",
-        "userRtcUid",
-        "userAvatar",
-      ]);
-
-    let newMember = `
-    <div class="speaker user-rtc-${userRtcUid}" id="${members[i]}">
-        <img class="user-avatar avatar-${userRtcUid}" src="${userAvatar}"/>
-        <p>${name}</p>
-    </div>`;
-
-    document
-      .getElementById("members")
-      .insertAdjacentHTML("beforeend", newMember);
+    document.getElementById("members").insertAdjacentHTML("beforeend", buildMemberCard(members[i], attrs));
   }
 };
 
 const toggleMic = async (e) => {
-  if (micMuted) {
-    e.target.src = "icons/mic.svg";
-    e.target.style.backgroundColor = "ivory";
-    micMuted = false;
-  } else {
-    e.target.src = "icons/mic-off.svg";
-    e.target.style.backgroundColor = "indianred";
+  micMuted = !micMuted;
 
-    micMuted = true;
-  }
+  e.target.src = micMuted ? "icons/mic-off.svg" : "icons/mic.svg";
+  e.target.style.backgroundColor = micMuted ? "indianred" : "ivory";
+
   audioTracks.localAudioTrack.setMuted(micMuted);
+  updateMicDisplay(rtcUid.toString(), micMuted);
+
+  if (channel) {
+    channel.sendMessage({
+      text: JSON.stringify({ type: "mic-toggle", rtcUid: rtcUid.toString(), muted: micMuted }),
+    });
+    rtmClient.addOrUpdateLocalUserAttributes({ micMuted: micMuted ? "true" : "false" });
+  }
 };
 
-let lobbyForm = document.getElementById("form");
+const lobbyForm = document.getElementById("form");
 
 const enterRoom = async (e) => {
   e.preventDefault();
@@ -186,8 +195,7 @@ const enterRoom = async (e) => {
   window.history.replaceState(null, null, `?room=${roomId}`);
 
   initRtc();
-
-  let displayName = e.target.displayname.value;
+  const displayName = e.target.displayname.value;
   initRtm(displayName);
 
   lobbyForm.style.display = "none";
@@ -195,18 +203,22 @@ const enterRoom = async (e) => {
   document.getElementById("room-name").innerText = roomId;
 };
 
-let leaveRtmChannel = async () => {
+const leaveRtmChannel = async () => {
   await channel.leave();
   await rtmClient.logout();
 };
 
-let leaveRoom = async () => {
+const leaveRoom = async () => {
   audioTracks.localAudioTrack.stop();
   audioTracks.localAudioTrack.close();
   rtcClient.unpublish();
   rtcClient.leave();
-
   leaveRtmChannel();
+
+  // Reset mic state for next session
+  micMuted = true;
+  document.getElementById("mic-icon").src = "icons/mic-off.svg";
+  document.getElementById("mic-icon").style.backgroundColor = "indianred";
 
   document.getElementById("form").style.display = "block";
   document.getElementById("room-header").style.display = "none";
@@ -217,17 +229,15 @@ lobbyForm.addEventListener("submit", enterRoom);
 document.getElementById("leave-icon").addEventListener("click", leaveRoom);
 document.getElementById("mic-icon").addEventListener("click", toggleMic);
 
-const avatars = document.getElementsByClassName("avatar-selection");
-
-for (let i = 0; avatars.length > i; i++) {
-  avatars[i].addEventListener("click", () => {
-    for (let i = 0; avatars.length > i; i++) {
-      avatars[i].style.borderColor = "#fff";
-      avatars[i].style.opacity = 0.5;
+const avatarEls = document.getElementsByClassName("avatar-selection");
+for (let i = 0; i < avatarEls.length; i++) {
+  avatarEls[i].addEventListener("click", () => {
+    for (let j = 0; j < avatarEls.length; j++) {
+      avatarEls[j].style.borderColor = "#fff";
+      avatarEls[j].style.opacity = 0.5;
     }
-
-    avatar = avatars[i].src;
-    avatars[i].style.borderColor = "#00ff00";
-    avatars[i].style.opacity = 1;
+    avatar = avatarEls[i].src;
+    avatarEls[i].style.borderColor = "#00ff00";
+    avatarEls[i].style.opacity = 1;
   });
 }
