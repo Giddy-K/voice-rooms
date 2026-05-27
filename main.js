@@ -18,7 +18,17 @@ const fetchTokens = async (channel, rtcUidVal, rtmUidVal) => {
 };
 
 const rtcUid = Math.floor(Math.random() * 2147483647);
-const rtmUid = String(Math.floor(Math.random() * 2147483647));
+
+// Persistent identity so the same user is recognised across refreshes/rejoins
+const getRtmUid = () => {
+  let uid = localStorage.getItem("voice-rooms-uid");
+  if (!uid) {
+    uid = String(Math.floor(Math.random() * 2147483647));
+    localStorage.setItem("voice-rooms-uid", uid);
+  }
+  return uid;
+};
+const rtmUid = getRtmUid();
 
 const getRoomId = () => {
   const urlParams = new URLSearchParams(window.location.search);
@@ -101,6 +111,15 @@ const handleChannelMessage = (message) => {
     const data = JSON.parse(message.text);
     if (data.type === "mic-toggle") {
       updateMicDisplay(data.rtcUid, data.muted);
+    } else if (data.type === "host-claim") {
+      const el = document.getElementById(data.memberId);
+      if (el) {
+        const badge = el.querySelector(".user-role");
+        if (badge) {
+          badge.className = "user-role host-badge";
+          badge.textContent = "Host";
+        }
+      }
     }
   } catch (e) {
     console.error(e);
@@ -111,20 +130,35 @@ const initRtm = async (name) => {
   rtmClient = AgoraRTM.createInstance(appid);
   await rtmClient.login({ uid: rtmUid, token: rtmToken });
 
-  channel = rtmClient.createChannel(roomId);
-  await channel.join();
-
-  // First member to join is the host
-  const existingMembers = await channel.getMembers();
-  const isHost = existingMembers.length === 1;
-
+  // Set attributes BEFORE joining so MemberJoined on other clients can read them immediately
   await rtmClient.addOrUpdateLocalUserAttributes({
     name: name,
     userRtcUid: rtcUid.toString(),
     userAvatar: avatar,
-    isHost: isHost ? "true" : "false",
     micMuted: "true",
+    isHost: "false",
   });
+
+  channel = rtmClient.createChannel(roomId);
+  await channel.join();
+
+  // Host is whoever's UID is recorded in the channel attributes.
+  // If no UID is recorded yet (empty/new room), this user becomes host.
+  const channelAttrs = await rtmClient.getChannelAttributesByKeys(roomId, ["hostUid"]);
+  let isHost = false;
+
+  if (!channelAttrs.hostUid) {
+    isHost = true;
+    await rtmClient.addOrUpdateChannelAttributes(roomId, { hostUid: rtmUid }, { enableNotification: false });
+  } else if (channelAttrs.hostUid === rtmUid) {
+    isHost = true;
+  }
+
+  if (isHost) {
+    await rtmClient.addOrUpdateLocalUserAttributes({ isHost: "true" });
+    // Tell existing members to update this user's badge (they rendered it as Participant initially)
+    channel.sendMessage({ text: JSON.stringify({ type: "host-claim", memberId: rtmUid }) });
+  }
 
   getChannelMembers();
 
@@ -258,6 +292,15 @@ const enterRoom = async (e) => {
 };
 
 const leaveRtmChannel = async () => {
+  try {
+    const members = await channel.getMembers();
+    if (members.length <= 1) {
+      // We're the last one — clear the host record so the next person to join starts fresh
+      await rtmClient.deleteChannelAttributesByKeys(roomId, ["hostUid"], { enableNotification: false });
+    }
+  } catch (e) {
+    console.error(e);
+  }
   await channel.leave();
   await rtmClient.logout();
 };
