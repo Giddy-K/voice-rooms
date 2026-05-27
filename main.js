@@ -3,7 +3,19 @@ import AgoraRTC from "agora-rtc-sdk-ng";
 import AgoraRTM from "agora-rtm-sdk";
 
 const appid = import.meta.env.VITE_AGORA_APP_ID;
-const token = null;
+
+let rtcToken = null;
+let rtmToken = null;
+
+const fetchTokens = async (channel, rtcUidVal, rtmUidVal) => {
+  const res = await fetch(
+    `/api/token?channel=${encodeURIComponent(channel)}&rtcUid=${rtcUidVal}&rtmUid=${encodeURIComponent(rtmUidVal)}`
+  );
+  if (!res.ok) throw new Error("Failed to fetch tokens");
+  const data = await res.json();
+  rtcToken = data.rtcToken;
+  rtmToken = data.rtmToken;
+};
 
 const rtcUid = Math.floor(Math.random() * 2147483647);
 const rtmUid = String(Math.floor(Math.random() * 2147483647));
@@ -68,7 +80,7 @@ const handleChannelMessage = (message) => {
 
 const initRtm = async (name) => {
   rtmClient = AgoraRTM.createInstance(appid);
-  await rtmClient.login({ uid: rtmUid, token: token });
+  await rtmClient.login({ uid: rtmUid, token: rtmToken });
 
   channel = rtmClient.createChannel(roomId);
   await channel.join();
@@ -98,7 +110,7 @@ const initRtc = async () => {
   rtcClient.on("user-published", handleUserPublished);
   rtcClient.on("user-left", handleUserLeft);
 
-  await rtcClient.join(appid, roomId, token, rtcUid);
+  await rtcClient.join(appid, roomId, rtcToken, rtcUid);
   audioTracks.localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack();
   audioTracks.localAudioTrack.setMuted(micMuted);
   await rtcClient.publish(audioTracks.localAudioTrack);
@@ -193,6 +205,13 @@ const enterRoom = async (e) => {
 
   roomId = e.target.roomname.value.toLowerCase();
   window.history.replaceState(null, null, `?room=${roomId}`);
+
+  try {
+    await fetchTokens(roomId, rtcUid, rtmUid);
+  } catch (err) {
+    alert("Failed to get access tokens. Check your server and .env configuration.");
+    return;
+  }
 
   initRtc();
   const displayName = e.target.displayname.value;
