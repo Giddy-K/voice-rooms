@@ -34,7 +34,36 @@ let audioTracks = {
 };
 
 let micMuted = true;
+let inRoom = false;
 let rtcClient, rtmClient, channel, avatar;
+
+const memberNames = new Map();
+
+const showToast = (message, type = "info") => {
+  let container = document.getElementById("toast-container");
+  if (!container) {
+    container = document.createElement("div");
+    container.id = "toast-container";
+    document.body.appendChild(container);
+  }
+  const toast = document.createElement("div");
+  toast.className = `toast toast-${type}`;
+  toast.textContent = message;
+  container.appendChild(toast);
+  requestAnimationFrame(() => requestAnimationFrame(() => toast.classList.add("show")));
+  setTimeout(() => {
+    toast.classList.remove("show");
+    toast.addEventListener("transitionend", () => toast.remove(), { once: true });
+  }, 3500);
+};
+
+window.addEventListener("beforeunload", (e) => {
+  if (inRoom) {
+    e.preventDefault();
+    e.returnValue = "";
+    leaveRtmChannel();
+  }
+});
 
 const escapeHtml = (str) => {
   const div = document.createElement("div");
@@ -99,7 +128,6 @@ const initRtm = async (name) => {
 
   getChannelMembers();
 
-  window.addEventListener("beforeunload", leaveRtmChannel);
   channel.on("MemberJoined", handleMemberJoined);
   channel.on("MemberLeft", handleMemberLeft);
   channel.on("ChannelMessage", handleChannelMessage);
@@ -159,11 +187,16 @@ const handleMemberJoined = async (MemberId) => {
   const attrs = await rtmClient.getUserAttributesByKeys(MemberId, [
     "name", "userRtcUid", "userAvatar", "isHost", "micMuted",
   ]);
+  memberNames.set(MemberId, attrs.name || "Someone");
   document.getElementById("members").insertAdjacentHTML("beforeend", buildMemberCard(MemberId, attrs));
+  showToast(`${attrs.name || "Someone"} joined the room`, "info");
 };
 
 const handleMemberLeft = async (MemberId) => {
+  const name = memberNames.get(MemberId) || "Someone";
+  memberNames.delete(MemberId);
   document.getElementById(MemberId)?.remove();
+  showToast(`${name} left the room`, "warning");
 };
 
 const getChannelMembers = async () => {
@@ -172,6 +205,7 @@ const getChannelMembers = async () => {
     const attrs = await rtmClient.getUserAttributesByKeys(members[i], [
       "name", "userRtcUid", "userAvatar", "isHost", "micMuted",
     ]);
+    memberNames.set(members[i], attrs.name || "Someone");
     document.getElementById("members").insertAdjacentHTML("beforeend", buildMemberCard(members[i], attrs));
   }
 };
@@ -199,7 +233,7 @@ const enterRoom = async (e) => {
   e.preventDefault();
 
   if (!avatar) {
-    alert("Please select an avatar");
+    showToast("Please select an avatar before entering.", "warning");
     return;
   }
 
@@ -209,7 +243,7 @@ const enterRoom = async (e) => {
   try {
     await fetchTokens(roomId, rtcUid, rtmUid);
   } catch (err) {
-    alert("Failed to get access tokens. Check your server and .env configuration.");
+    showToast("Failed to connect. Check your configuration and try again.", "error");
     return;
   }
 
@@ -217,6 +251,7 @@ const enterRoom = async (e) => {
   const displayName = e.target.displayname.value;
   initRtm(displayName);
 
+  inRoom = true;
   lobbyForm.style.display = "none";
   document.getElementById("room-header").style.display = "flex";
   document.getElementById("room-name").innerText = roomId;
@@ -233,6 +268,9 @@ const leaveRoom = async () => {
   rtcClient.unpublish();
   rtcClient.leave();
   leaveRtmChannel();
+
+  inRoom = false;
+  memberNames.clear();
 
   // Reset mic state for next session
   micMuted = true;
